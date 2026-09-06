@@ -8,6 +8,10 @@ from io import BytesIO
 
 st.set_page_config(page_title="PLI & RPLI Performance Analyzer", page_icon="📊", layout="wide")
 
+# Ensure base directory for multi-tenant data exists
+WORKSPACE_DIR = "user_workspaces"
+os.makedirs(WORKSPACE_DIR, exist_ok=True)
+
 # Custom Styling for Large Interactive Menu Cards
 st.markdown(
     """
@@ -32,75 +36,16 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-MASTER_AGENT_FILE = "agent_master_mapping.csv"
-MASTER_OFFICE_FILE = "office_master_mapping.csv"
-MASTER_POLICY_TYPE_FILE = "policy_type_master_mapping.csv"
-
-# Persistent Storage Paths for BOSO datasets
-PERSISTENT_CURRENT_BOSO = "saved_current_boso.parquet"
-PERSISTENT_PREVIOUS_BOSO = "saved_previous_boso.parquet"
-
-# --- PERSISTENT MASTER STORAGE HELPERS ---
-def load_master_agent_mapping():
-    if os.path.exists(MASTER_AGENT_FILE):
-        try:
-            df = pd.read_csv(MASTER_AGENT_FILE, dtype=str)
-            df.columns = [c.strip().upper() for c in df.columns]
-            return df
-        except Exception:
-            return pd.DataFrame(columns=["AGENT_CODE", "AGENT_NAME", "AGENT_TYPE"])
-    return pd.DataFrame(columns=["AGENT_CODE", "AGENT_NAME", "AGENT_TYPE"])
-
-def save_master_agent_mapping(df):
-    df.to_csv(MASTER_AGENT_FILE, index=False)
-
-def load_master_office_mapping():
-    cols = [
-        "OFFICECODE", "OFFICENAME", "SUB DIVISION",
-        "PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET",
-        "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"
-    ]
-    if os.path.exists(MASTER_OFFICE_FILE):
-        try:
-            df = pd.read_csv(MASTER_OFFICE_FILE, dtype=str)
-            df.columns = [c.strip().upper() for c in df.columns]
-            for col in ["PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET", "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"]:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-                else:
-                    df[col] = 0.0
-            return df
-        except Exception:
-            return pd.DataFrame(columns=cols)
-    return pd.DataFrame(columns=cols)
-
-def save_master_office_mapping(df):
-    df.to_csv(MASTER_OFFICE_FILE, index=False)
-
-def load_master_policy_type_mapping():
-    if os.path.exists(MASTER_POLICY_TYPE_FILE):
-        try:
-            df = pd.read_csv(MASTER_POLICY_TYPE_FILE, dtype=str)
-            df.columns = [c.strip().upper() for c in df.columns]
-            return df
-        except Exception:
-            return pd.DataFrame(columns=["RAW_POLICY_TYPE", "SCHEME"])
-    return pd.DataFrame(columns=["RAW_POLICY_TYPE", "SCHEME"])
-
-def save_master_policy_type_mapping(df):
-    df.to_csv(MASTER_POLICY_TYPE_FILE, index=False)
-
 # --- SESSION STATE INITIALIZATION ---
 if "started" not in st.session_state:
     st.session_state.started = False
 if "current_view" not in st.session_state:
     st.session_state.current_view = "HOME"
-
-def start_app():
-    st.session_state.started = True
+if "user_id" not in st.session_state:
+    st.session_state.user_id = ""
 
 # --- COMPACT SINGLE-SCREEN WELCOME PAGE ---
-if not st.session_state.started:
+if not st.session_state.started or not st.session_state.user_id:
     _, c_mid, _ = st.columns([1, 3.2, 1])
     with c_mid:
         st.markdown(
@@ -149,15 +94,28 @@ if not st.session_state.started:
             st.markdown(
                 """
                 <div style='background-color: #fff9db; border-left: 4px solid #f59f00; border-radius: 4px; padding: 10px 14px; margin-bottom: 18px; font-size: 0.78rem; color: #664d03; line-height: 1.4;'>
-                    <strong>⚠️ Notice:</strong> This application is an independent analytical tool developed strictly for internal administrative reference, MIS tracking, and performance review.
+                    <strong>⚠️ Notice:</strong> Enter your Division Name or Unique User Code below. Your uploaded BOSO reports, targets, and settings will remain isolated and saved under your workspace.
                 </div>
                 """,
                 unsafe_allow_html=True
             )
 
+            entered_id = st.text_input(
+                "🔑 Enter Division Name / User Code:",
+                value=st.session_state.user_id,
+                placeholder="e.g., MAVELIKARA, KOLLAM, BALU"
+            ).strip().upper()
+
+            # Sanitize user_id for file systems
+            sanitized_id = re.sub(r'[^A-Z0-9_-]', '_', entered_id)
+
             if st.button("🚀 ENTER ANALYZER DASHBOARD", use_container_width=True, type="primary"):
-                start_app()
-                st.rerun()
+                if sanitized_id:
+                    st.session_state.user_id = sanitized_id
+                    st.session_state.started = True
+                    st.rerun()
+                else:
+                    st.error("Please enter a valid Division Name or User Code to proceed.")
 
             st.markdown(
                 """
@@ -168,6 +126,64 @@ if not st.session_state.started:
                 unsafe_allow_html=True
             )
     st.stop()
+
+# --- USER DEDICATED FILE PATHS ---
+CURRENT_USER = st.session_state.user_id
+USER_BOSO_CURRENT = os.path.join(WORKSPACE_DIR, f"{CURRENT_USER}_current_boso.parquet")
+USER_BOSO_PREVIOUS = os.path.join(WORKSPACE_DIR, f"{CURRENT_USER}_previous_boso.parquet")
+USER_MASTER_AGENT = os.path.join(WORKSPACE_DIR, f"{CURRENT_USER}_agent_master.csv")
+USER_MASTER_OFFICE = os.path.join(WORKSPACE_DIR, f"{CURRENT_USER}_office_master.csv")
+USER_MASTER_POLICY_TYPE = os.path.join(WORKSPACE_DIR, f"{CURRENT_USER}_policy_type_master.csv")
+
+# --- USER-ISOLATED MASTER STORAGE HELPERS ---
+def load_master_agent_mapping():
+    if os.path.exists(USER_MASTER_AGENT):
+        try:
+            df = pd.read_csv(USER_MASTER_AGENT, dtype=str)
+            df.columns = [c.strip().upper() for c in df.columns]
+            return df
+        except Exception:
+            return pd.DataFrame(columns=["AGENT_CODE", "AGENT_NAME", "AGENT_TYPE"])
+    return pd.DataFrame(columns=["AGENT_CODE", "AGENT_NAME", "AGENT_TYPE"])
+
+def save_master_agent_mapping(df):
+    df.to_csv(USER_MASTER_AGENT, index=False)
+
+def load_master_office_mapping():
+    cols = [
+        "OFFICECODE", "OFFICENAME", "SUB DIVISION",
+        "PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET",
+        "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"
+    ]
+    if os.path.exists(USER_MASTER_OFFICE):
+        try:
+            df = pd.read_csv(USER_MASTER_OFFICE, dtype=str)
+            df.columns = [c.strip().upper() for c in df.columns]
+            for col in ["PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET", "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+                else:
+                    df[col] = 0.0
+            return df
+        except Exception:
+            return pd.DataFrame(columns=cols)
+    return pd.DataFrame(columns=cols)
+
+def save_master_office_mapping(df):
+    df.to_csv(USER_MASTER_OFFICE, index=False)
+
+def load_master_policy_type_mapping():
+    if os.path.exists(USER_MASTER_POLICY_TYPE):
+        try:
+            df = pd.read_csv(USER_MASTER_POLICY_TYPE, dtype=str)
+            df.columns = [c.strip().upper() for c in df.columns]
+            return df
+        except Exception:
+            return pd.DataFrame(columns=["RAW_POLICY_TYPE", "SCHEME"])
+    return pd.DataFrame(columns=["RAW_POLICY_TYPE", "SCHEME"])
+
+def save_master_policy_type_mapping(df):
+    df.to_csv(USER_MASTER_POLICY_TYPE, index=False)
 
 @st.cache_data
 def read_excel_files(files):
@@ -257,7 +273,6 @@ def prepare(df):
     # Map Payment Interval
     x["_INTERVAL"] = x["_PAYMENT"].apply(parse_payment_interval)
 
-    # Monthly equivalent rate
     monthly_equivalent_rate = x["_BASE_PREMIUM"] / x["_INTERVAL"]
     is_single_installment = x["_MONTHS"] <= x["_INTERVAL"]
 
@@ -307,7 +322,6 @@ def prepare(df):
     x["_LAPSE_THRESHOLD"] = np.where(x["_POLICY_AGE_MONTHS"] < 36, 6, 12)
     x["_MONTHS_SINCE_LAPSE"] = np.maximum(x["_UNPAID_MONTHS"] - x["_LAPSE_THRESHOLD"], 0)
     
-    # Total unpaid premium calculation based on months in default
     x["_TOTAL_UNPAID_PREMIUM"] = np.where(
         x["_IS_LAPSED"],
         monthly_equivalent_rate * x["_UNPAID_MONTHS"],
@@ -364,63 +378,71 @@ def excel_bytes(sheets):
     bio.seek(0)
     return bio
 
-# --- SIDEBAR: Upload Files & Persistent BOSO Handling ---
-st.sidebar.header("1. BOSO Data Management")
+# --- SIDEBAR: Workspace & Upload Management ---
+st.sidebar.markdown(f"### 👤 Profile: `{CURRENT_USER}`")
+if st.sidebar.button("🚪 Switch Profile / Logout", use_container_width=True):
+    st.session_state.user_id = ""
+    st.session_state.started = False
+    st.session_state.current_view = "HOME"
+    st.rerun()
+
+st.sidebar.markdown("---")
+st.sidebar.header("1. Upload BOSO Files")
 current_files = st.sidebar.file_uploader("Upload latest BOSO", type=["xlsx", "xls"], accept_multiple_files=True)
 previous_files = st.sidebar.file_uploader("Previous BOSO files for comparison (Optional)", type=["xlsx", "xls"], accept_multiple_files=True)
 
-# 1. Process and save newly uploaded current files, or read from disk
+# 1. Process and save uploaded current files or load user-specific parquet
 if current_files:
     try:
         raw_curr = read_excel_files(current_files)
         data = prepare(raw_curr)
-        data.to_parquet(PERSISTENT_CURRENT_BOSO, index=False)
-        st.sidebar.success("✅ Latest BOSO saved successfully!")
+        data.to_parquet(USER_BOSO_CURRENT, index=False)
+        st.sidebar.success(f"✅ Saved to workspace: {CURRENT_USER}")
     except Exception as e:
         st.error(f"Error processing uploaded BOSO file(s): {e}")
         st.stop()
-elif os.path.exists(PERSISTENT_CURRENT_BOSO):
+elif os.path.exists(USER_BOSO_CURRENT):
     try:
-        data = pd.read_parquet(PERSISTENT_CURRENT_BOSO)
-        st.sidebar.info("💾 Loaded previously saved BOSO data from disk.")
+        data = pd.read_parquet(USER_BOSO_CURRENT)
+        st.sidebar.info("💾 Loaded saved BOSO from workspace.")
     except Exception as e:
-        st.error(f"Error reading saved BOSO data: {e}")
+        st.error(f"Error reading saved BOSO: {e}")
         st.stop()
 else:
-    st.info("Upload latest BOSO file(s) in the left sidebar to begin.")
+    st.info(f"No BOSO file on record for workspace `{CURRENT_USER}`. Please upload your latest BOSO in the sidebar to begin.")
     st.stop()
 
-# 2. Process and save newly uploaded previous files, or read from disk
+# 2. Process and save uploaded previous files or load user-specific previous parquet
 prev_data = pd.DataFrame()
 if previous_files:
     try:
         raw_prev = read_excel_files(previous_files)
         prev_data = prepare(raw_prev)
-        prev_data.to_parquet(PERSISTENT_PREVIOUS_BOSO, index=False)
-        st.sidebar.success("✅ Previous BOSO comparison file saved!")
+        prev_data.to_parquet(USER_BOSO_PREVIOUS, index=False)
+        st.sidebar.success("✅ Saved previous BOSO comparison file!")
     except Exception as e:
-        st.sidebar.error(f"Error reading previous BOSO: {e}")
-elif os.path.exists(PERSISTENT_PREVIOUS_BOSO):
+        st.sidebar.error(f"Error processing previous BOSO: {e}")
+elif os.path.exists(USER_BOSO_PREVIOUS):
     try:
-        prev_data = pd.read_parquet(PERSISTENT_PREVIOUS_BOSO)
+        prev_data = pd.read_parquet(USER_BOSO_PREVIOUS)
     except Exception:
         prev_data = pd.DataFrame()
 
-# 3. Sidebar action to wipe saved BOSO files
-if os.path.exists(PERSISTENT_CURRENT_BOSO):
-    if st.sidebar.button("🗑️ Clear Saved BOSO Data", use_container_width=True):
-        if os.path.exists(PERSISTENT_CURRENT_BOSO):
-            os.remove(PERSISTENT_CURRENT_BOSO)
-        if os.path.exists(PERSISTENT_PREVIOUS_BOSO):
-            os.remove(PERSISTENT_PREVIOUS_BOSO)
-        st.sidebar.warning("Saved BOSO files deleted.")
+# 3. Clear data for THIS user only
+if os.path.exists(USER_BOSO_CURRENT):
+    if st.sidebar.button("🗑️ Clear My Saved BOSO Data", use_container_width=True):
+        if os.path.exists(USER_BOSO_CURRENT):
+            os.remove(USER_BOSO_CURRENT)
+        if os.path.exists(USER_BOSO_PREVIOUS):
+            os.remove(USER_BOSO_PREVIOUS)
+        st.sidebar.warning(f"Cleared saved BOSO files for {CURRENT_USER}.")
         st.rerun()
 
 if data.empty:
     st.error("No valid records found.")
     st.stop()
 
-# --- LOAD ACTIVE MASTER DATA (BACKGROUND SYNCHRONIZATION) ---
+# --- LOAD USER-SPECIFIC MASTER MAPPINGS ---
 # 1. Policy Type Master
 master_policy_types = load_master_policy_type_mapping()
 current_unique_types = pd.DataFrame({"RAW_POLICY_TYPE": data["_RAW_POLICY_TYPE"].dropna().unique()})
@@ -599,7 +621,7 @@ agent_summary["Rank"] = range(1, len(agent_summary) + 1)
 # SCREEN 1: HOME PAGE / LARGE NAVIGATION DASHBOARD
 # ==============================================================================
 if st.session_state.current_view == "HOME":
-    st.title("📊 PLI & RPLI Performance Analyzer")
+    st.title(f"📊 PLI & RPLI Performance Analyzer - [{CURRENT_USER}]")
     st.caption("Divisional Analytics, Performance Portals, Agent Rankings, and Settings.")
 
     # --- TOP KPI SUMMARY OVERVIEW ---
@@ -675,11 +697,13 @@ if st.session_state.current_view == "HOME":
 # SUB-PAGES (NAVIGATED SCREENS)
 # ==============================================================================
 else:
-    top_nav1, _ = st.columns([1.5, 5])
+    top_nav1, top_nav2 = st.columns([1.5, 5])
     with top_nav1:
         if st.button("⬅️ BACK TO MAIN MENU", type="secondary", use_container_width=True):
             st.session_state.current_view = "HOME"
             st.rerun()
+    with top_nav2:
+        st.caption(f"Active Workspace: **{CURRENT_USER}**")
 
     st.markdown("---")
 
@@ -890,8 +914,8 @@ else:
 
     # 7. SETTINGS & MASTER MAPPINGS SCREEN
     elif st.session_state.current_view == "SETTINGS":
-        st.subheader("⚙️ Settings & Master Mappings")
-        st.info("Configure permanent master data and target figures below. Click Save in each tab to persist data locally.")
+        st.subheader(f"⚙️ Settings & Master Mappings ({CURRENT_USER})")
+        st.info("These mappings are permanently saved specifically for your division/user workspace.")
 
         set_tab1, set_tab2, set_tab3 = st.tabs([
             "📋 Policy Type ↔ Scheme (PLI / RPLI)",
@@ -919,12 +943,12 @@ else:
                 if st.button("💾 Save Policy Type Mapping", type="primary", use_container_width=True):
                     clean_save_ptype = edited_ptype_df.dropna(subset=["RAW_POLICY_TYPE"]).drop_duplicates("RAW_POLICY_TYPE")
                     save_master_policy_type_mapping(clean_save_ptype)
-                    st.success("✅ Policy type master mapping saved!")
+                    st.success(f"✅ Policy type mapping saved for {CURRENT_USER}!")
             with pt_b2:
                 st.download_button(
                     "⬇️ Export Policy Type Master",
                     excel_bytes({"Policy Type Master": edited_ptype_df}),
-                    file_name="Policy_Type_Master_Mapping.xlsx",
+                    file_name=f"{CURRENT_USER}_Policy_Type_Master.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -953,12 +977,12 @@ else:
             with of_b1:
                 if st.button("💾 Save Office & Targets Mapping", type="primary", use_container_width=True):
                     save_master_office_mapping(edited_office_map)
-                    st.success("✅ Permanent Office Targets & Mappings saved!")
+                    st.success(f"✅ Office Targets & Mappings saved for {CURRENT_USER}!")
             with of_b2:
                 st.download_button(
                     "⬇️ Export Office Targets Master",
                     excel_bytes({"Office Master": edited_office_map}),
-                    file_name="Office_Master_Mapping.xlsx",
+                    file_name=f"{CURRENT_USER}_Office_Master.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -984,12 +1008,12 @@ else:
                 if st.button("💾 Save Agent Mapping", type="primary", use_container_width=True):
                     clean_save_agent = edited_agent_df.dropna(subset=["AGENT_CODE"]).drop_duplicates("AGENT_CODE")
                     save_master_agent_mapping(clean_save_agent)
-                    st.success("✅ Permanent Agent mapping saved!")
+                    st.success(f"✅ Agent mapping saved for {CURRENT_USER}!")
             with ag_b2:
                 st.download_button(
                     "⬇️ Export Agent Master",
                     excel_bytes({"Agent Master": edited_agent_df}),
-                    file_name="Agent_Master_Mapping.xlsx",
+                    file_name=f"{CURRENT_USER}_Agent_Master.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
@@ -1010,7 +1034,7 @@ st.sidebar.markdown("---")
 st.sidebar.download_button(
     "📥 Download Complete Excel Report",
     excel_bytes(sheets),
-    file_name=f"PLI_RPLI_Performance_Report_{start_label}.xlsx",
+    file_name=f"{CURRENT_USER}_PLI_RPLI_Performance_Report_{start_label}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
