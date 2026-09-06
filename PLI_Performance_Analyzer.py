@@ -35,8 +35,6 @@ st.markdown(
 MASTER_AGENT_FILE = "agent_master_mapping.csv"
 MASTER_OFFICE_FILE = "office_master_mapping.csv"
 MASTER_POLICY_TYPE_FILE = "policy_type_master_mapping.csv"
-
-# Persistent Storage Paths for BOSO datasets
 PERSISTENT_CURRENT_BOSO = "saved_current_boso.parquet"
 PERSISTENT_PREVIOUS_BOSO = "saved_previous_boso.parquet"
 
@@ -257,7 +255,6 @@ def prepare(df):
     # Map Payment Interval
     x["_INTERVAL"] = x["_PAYMENT"].apply(parse_payment_interval)
 
-    # Monthly equivalent rate
     monthly_equivalent_rate = x["_BASE_PREMIUM"] / x["_INTERVAL"]
     is_single_installment = x["_MONTHS"] <= x["_INTERVAL"]
 
@@ -307,7 +304,6 @@ def prepare(df):
     x["_LAPSE_THRESHOLD"] = np.where(x["_POLICY_AGE_MONTHS"] < 36, 6, 12)
     x["_MONTHS_SINCE_LAPSE"] = np.maximum(x["_UNPAID_MONTHS"] - x["_LAPSE_THRESHOLD"], 0)
     
-    # Total unpaid premium calculation based on months in default
     x["_TOTAL_UNPAID_PREMIUM"] = np.where(
         x["_IS_LAPSED"],
         monthly_equivalent_rate * x["_UNPAID_MONTHS"],
@@ -364,12 +360,12 @@ def excel_bytes(sheets):
     bio.seek(0)
     return bio
 
-# --- SIDEBAR: Upload Files & Persistent BOSO Handling ---
-st.sidebar.header("1. BOSO Data Management")
+# --- SIDEBAR: Upload Files & BOSO Handling ---
+st.sidebar.header("1. Upload BOSO Files")
 current_files = st.sidebar.file_uploader("Upload latest BOSO", type=["xlsx", "xls"], accept_multiple_files=True)
 previous_files = st.sidebar.file_uploader("Previous BOSO files for comparison (Optional)", type=["xlsx", "xls"], accept_multiple_files=True)
 
-# 1. Process and save newly uploaded current files, or read from disk
+# Process current files or load saved file
 if current_files:
     try:
         raw_curr = read_excel_files(current_files)
@@ -382,45 +378,45 @@ if current_files:
 elif os.path.exists(PERSISTENT_CURRENT_BOSO):
     try:
         data = pd.read_parquet(PERSISTENT_CURRENT_BOSO)
-        st.sidebar.info("💾 Loaded previously saved BOSO data from disk.")
+        st.sidebar.info("💾 Loaded saved BOSO from disk.")
     except Exception as e:
-        st.error(f"Error reading saved BOSO data: {e}")
+        st.error(f"Error reading saved BOSO: {e}")
         st.stop()
 else:
     st.info("Upload latest BOSO file(s) in the left sidebar to begin.")
     st.stop()
 
-# 2. Process and save newly uploaded previous files, or read from disk
+# Process previous files or load saved previous file
 prev_data = pd.DataFrame()
 if previous_files:
     try:
         raw_prev = read_excel_files(previous_files)
         prev_data = prepare(raw_prev)
         prev_data.to_parquet(PERSISTENT_PREVIOUS_BOSO, index=False)
-        st.sidebar.success("✅ Previous BOSO comparison file saved!")
+        st.sidebar.success("✅ Saved previous BOSO comparison file!")
     except Exception as e:
-        st.sidebar.error(f"Error reading previous BOSO: {e}")
+        st.sidebar.error(f"Error processing previous BOSO: {e}")
 elif os.path.exists(PERSISTENT_PREVIOUS_BOSO):
     try:
         prev_data = pd.read_parquet(PERSISTENT_PREVIOUS_BOSO)
     except Exception:
         prev_data = pd.DataFrame()
 
-# 3. Sidebar action to wipe saved BOSO files
+# Clear saved BOSO data button
 if os.path.exists(PERSISTENT_CURRENT_BOSO):
     if st.sidebar.button("🗑️ Clear Saved BOSO Data", use_container_width=True):
         if os.path.exists(PERSISTENT_CURRENT_BOSO):
             os.remove(PERSISTENT_CURRENT_BOSO)
         if os.path.exists(PERSISTENT_PREVIOUS_BOSO):
             os.remove(PERSISTENT_PREVIOUS_BOSO)
-        st.sidebar.warning("Saved BOSO files deleted.")
+        st.sidebar.warning("Cleared saved BOSO files.")
         st.rerun()
 
 if data.empty:
     st.error("No valid records found.")
     st.stop()
 
-# --- LOAD ACTIVE MASTER DATA (BACKGROUND SYNCHRONIZATION) ---
+# --- LOAD MASTER DATA ---
 # 1. Policy Type Master
 master_policy_types = load_master_policy_type_mapping()
 current_unique_types = pd.DataFrame({"RAW_POLICY_TYPE": data["_RAW_POLICY_TYPE"].dropna().unique()})
@@ -602,25 +598,7 @@ if st.session_state.current_view == "HOME":
     st.title("📊 PLI & RPLI Performance Analyzer")
     st.caption("Divisional Analytics, Performance Portals, Agent Rankings, and Settings.")
 
-    # --- TOP KPI SUMMARY OVERVIEW ---
-    st.markdown("### 📌 Overall Performance Overview")
-    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-    kpi1.metric("Total Policies", f"{data['_POLICY'].nunique():,}")
-    kpi1.caption(f"PLI: {data[data['_SCHEME']=='PLI']['_POLICY'].nunique():,} | RPLI: {data[data['_SCHEME']=='RPLI']['_POLICY'].nunique():,}")
-
-    kpi2.metric("PLI Initial Premium", f"₹{office['PLI_Initial'].sum():,.2f}")
-    kpi2.caption(f"Target: ₹{office['PLI_INITIAL_TARGET'].sum():,.0f}")
-
-    kpi3.metric("PLI Renewal Premium", f"₹{office['PLI_Renewal'].sum():,.2f}")
-    kpi3.caption(f"Target: ₹{office['PLI_RENEWAL_TARGET'].sum():,.0f}")
-
-    kpi4.metric("RPLI Initial Premium", f"₹{office['RPLI_Initial'].sum():,.2f}")
-    kpi4.caption(f"Target: ₹{office['RPLI_INITIAL_TARGET'].sum():,.0f}")
-
-    kpi5.metric("RPLI Renewal Premium", f"₹{office['RPLI_Renewal'].sum():,.2f}")
-    kpi5.caption(f"Target: ₹{office['RPLI_RENEWAL_TARGET'].sum():,.0f}")
-
-    st.markdown("---")
+    # --- 1. SELECT ANALYTICS & MANAGEMENT MODULE ---
     st.markdown("### 🗂️ Select Analytics & Management Module")
 
     # Large Menu Cards: Row 1 (Analytics Modules)
@@ -670,6 +648,26 @@ if st.session_state.current_view == "HOME":
             st.session_state.current_view = "SETTINGS"
             st.rerun()
         st.caption("Manage plans, offices, targets, and agents.")
+
+    st.markdown("---")
+
+    # --- 2. OVERALL PERFORMANCE OVERVIEW (MOVED BELOW MODULES) ---
+    st.markdown("### 📌 Overall Performance Overview")
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Total Policies", f"{data['_POLICY'].nunique():,}")
+    kpi1.caption(f"PLI: {data[data['_SCHEME']=='PLI']['_POLICY'].nunique():,} | RPLI: {data[data['_SCHEME']=='RPLI']['_POLICY'].nunique():,}")
+
+    kpi2.metric("PLI Initial Premium", f"₹{office['PLI_Initial'].sum():,.2f}")
+    kpi2.caption(f"Target: ₹{office['PLI_INITIAL_TARGET'].sum():,.0f}")
+
+    kpi3.metric("PLI Renewal Premium", f"₹{office['PLI_Renewal'].sum():,.2f}")
+    kpi3.caption(f"Target: ₹{office['PLI_RENEWAL_TARGET'].sum():,.0f}")
+
+    kpi4.metric("RPLI Initial Premium", f"₹{office['RPLI_Initial'].sum():,.2f}")
+    kpi4.caption(f"Target: ₹{office['RPLI_INITIAL_TARGET'].sum():,.0f}")
+
+    kpi5.metric("RPLI Renewal Premium", f"₹{office['RPLI_Renewal'].sum():,.2f}")
+    kpi5.caption(f"Target: ₹{office['RPLI_RENEWAL_TARGET'].sum():,.0f}")
 
 # ==============================================================================
 # SUB-PAGES (NAVIGATED SCREENS)
