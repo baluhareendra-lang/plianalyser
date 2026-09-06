@@ -1,0 +1,1025 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import os
+import datetime
+import re
+from io import BytesIO
+
+st.set_page_config(page_title="PLI & RPLI Performance Analyzer", page_icon="📊", layout="wide")
+
+# Custom Styling for Large Interactive Menu Cards
+st.markdown(
+    """
+    <style>
+        div.stButton > button {
+            height: 4.8rem !important;
+            font-size: 1.15rem !important;
+            font-weight: 700 !important;
+            border-radius: 12px !important;
+            transition: all 0.25s ease-in-out;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.06);
+            border: 1px solid #d0d7de !important;
+        }
+        div.stButton > button:hover {
+            border-color: #8B0000 !important;
+            color: #8B0000 !important;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 10px rgba(139, 0, 0, 0.15);
+        }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+MASTER_AGENT_FILE = "agent_master_mapping.csv"
+MASTER_OFFICE_FILE = "office_master_mapping.csv"
+MASTER_POLICY_TYPE_FILE = "policy_type_master_mapping.csv"
+
+# Persistent Storage Paths for BOSO datasets
+PERSISTENT_CURRENT_BOSO = "saved_current_boso.parquet"
+PERSISTENT_PREVIOUS_BOSO = "saved_previous_boso.parquet"
+
+# --- PERSISTENT MASTER STORAGE HELPERS ---
+def load_master_agent_mapping():
+    if os.path.exists(MASTER_AGENT_FILE):
+        try:
+            df = pd.read_csv(MASTER_AGENT_FILE, dtype=str)
+            df.columns = [c.strip().upper() for c in df.columns]
+            return df
+        except Exception:
+            return pd.DataFrame(columns=["AGENT_CODE", "AGENT_NAME", "AGENT_TYPE"])
+    return pd.DataFrame(columns=["AGENT_CODE", "AGENT_NAME", "AGENT_TYPE"])
+
+def save_master_agent_mapping(df):
+    df.to_csv(MASTER_AGENT_FILE, index=False)
+
+def load_master_office_mapping():
+    cols = [
+        "OFFICECODE", "OFFICENAME", "SUB DIVISION",
+        "PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET",
+        "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"
+    ]
+    if os.path.exists(MASTER_OFFICE_FILE):
+        try:
+            df = pd.read_csv(MASTER_OFFICE_FILE, dtype=str)
+            df.columns = [c.strip().upper() for c in df.columns]
+            for col in ["PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET", "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"]:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+                else:
+                    df[col] = 0.0
+            return df
+        except Exception:
+            return pd.DataFrame(columns=cols)
+    return pd.DataFrame(columns=cols)
+
+def save_master_office_mapping(df):
+    df.to_csv(MASTER_OFFICE_FILE, index=False)
+
+def load_master_policy_type_mapping():
+    if os.path.exists(MASTER_POLICY_TYPE_FILE):
+        try:
+            df = pd.read_csv(MASTER_POLICY_TYPE_FILE, dtype=str)
+            df.columns = [c.strip().upper() for c in df.columns]
+            return df
+        except Exception:
+            return pd.DataFrame(columns=["RAW_POLICY_TYPE", "SCHEME"])
+    return pd.DataFrame(columns=["RAW_POLICY_TYPE", "SCHEME"])
+
+def save_master_policy_type_mapping(df):
+    df.to_csv(MASTER_POLICY_TYPE_FILE, index=False)
+
+# --- SESSION STATE INITIALIZATION ---
+if "started" not in st.session_state:
+    st.session_state.started = False
+if "current_view" not in st.session_state:
+    st.session_state.current_view = "HOME"
+
+def start_app():
+    st.session_state.started = True
+
+# --- COMPACT SINGLE-SCREEN WELCOME PAGE ---
+if not st.session_state.started:
+    _, c_mid, _ = st.columns([1, 3.2, 1])
+    with c_mid:
+        st.markdown(
+            """
+            <style>
+                .pli-badge {
+                    background-color: #8B0000;
+                    color: white;
+                    padding: 4px 12px;
+                    border-radius: 20px;
+                    font-size: 0.75rem;
+                    font-weight: 700;
+                    letter-spacing: 0.8px;
+                    display: inline-block;
+                }
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+
+        with st.container():
+            if os.path.exists("pli_logo.png"):
+                import base64
+                with open("pli_logo.png", "rb") as img_file:
+                    b64_logo = base64.b64encode(img_file.read()).decode()
+                logo_html = f"<div style='text-align: center; margin-bottom: 8px;'><img src='data:image/png;base64,{b64_logo}' width='95' style='display: inline-block;'></div>"
+            else:
+                logo_html = "<div style='text-align: center; font-size: 2.4rem; margin-bottom: 6px;'>📮</div>"
+
+            st.markdown(
+                f"""
+                <div style='text-align: center; margin-top: 4px; margin-bottom: 16px;'>
+                    {logo_html}
+                    <span class='pli-badge'>PLI • RPLI</span>
+                    <h1 style='color: #8B0000; margin: 8px 0 0 0; font-size: 1.8rem; font-weight: 800; letter-spacing: -0.5px;'>
+                        PLI & RPLI Performance Analyzer
+                    </h1>
+                    <p style='color: #555; margin: 4px 0 0 0; font-size: 0.95rem; font-weight: 500;'>
+                        Divisional Level Analytics Portal
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            st.markdown(
+                """
+                <div style='background-color: #fff9db; border-left: 4px solid #f59f00; border-radius: 4px; padding: 10px 14px; margin-bottom: 18px; font-size: 0.78rem; color: #664d03; line-height: 1.4;'>
+                    <strong>⚠️ Notice:</strong> This application is an independent analytical tool developed strictly for internal administrative reference, MIS tracking, and performance review.
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+            if st.button("🚀 ENTER ANALYZER DASHBOARD", use_container_width=True, type="primary"):
+                start_app()
+                st.rerun()
+
+            st.markdown(
+                """
+                <div style='text-align: center; color: #6c757d; margin-top: 18px; font-size: 0.78rem; border-top: 1px solid #edf2f7; padding-top: 10px;'>
+                    Developed by <strong style='color: #8B0000;'>BALU HAREENDRA</strong> • OA PLI Mavelikara Division
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+    st.stop()
+
+@st.cache_data
+def read_excel_files(files):
+    if not files:
+        return pd.DataFrame()
+    dfs = []
+    for f in files:
+        temp_df = pd.read_excel(f)
+        temp_df.columns = [str(c).strip().upper() for c in temp_df.columns]
+        dfs.append(temp_df)
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+def find_col(df, names):
+    for n in names:
+        if n in df.columns:
+            return n
+    return None
+
+def parse_payment_interval(val):
+    s = re.sub(r'[^A-Z0-9]', '', str(val).upper().strip())
+    if "HALFYEARLY" in s or "HALFYEAR" in s or "HALF" in s or "SEMI" in s or s in ["HY", "H", "6M", "6"]:
+        return 6
+    elif "ANNUAL" in s or "YEARLY" in s or "YEAR" in s or s in ["Y", "A", "12M", "12"]:
+        return 12
+    elif "QUARTERLY" in s or "QUART" in s or "QUARTER" in s or s in ["Q", "3M", "3"]:
+        return 3
+    return 1
+
+def prepare(df):
+    policy = find_col(df, ["POLICY NUMBER", "POLICY NO", "POLICY_NUMBER", "POLICYNO"])
+    entry = find_col(df, ["DATE OF ENTRY", "DATE_OF_ENTRY", "ENTRY DATE", "ENTRY_DATE", "ENTRY_DT", "PROPOSAL DATE"])
+    paid = find_col(df, ["PAID TO DATE", "PAID_TO_DATE", "PAID_TO", "PAID DATE", "PAID_UPTO"])
+    premium = find_col(df, ["PREMIUM", "PREMIUM AMOUNT", "PREMIUM_AMOUNT", "INST_PREMIUM", "INSTALLMENT PREMIUM"])
+    office = find_col(df, ["OFFICENAME", "OFFICE NAME", "OFFICE_NAME", "OFFICE"])
+    officecode = find_col(df, ["OFFICECODE", "OFFICE CODE", "OFFICE_CODE"])
+    payment_col = find_col(df, ["PAYMENT", "PAYMENT TYPE", "PAYMENT_TYPE", "PAYMENT MODE", "PAYMENT_MODE", "FREQUENCY", "MODE"])
+    policy_type = find_col(df, ["POLICY TYPE", "POLICY_TYPE", "PRODUCT", "PRODUCT NAME", "PLAN", "SCHEME TYPE", "SCHEME"])
+    status_col = find_col(df, ["STATUS", "POLICY STATUS", "POLICY_STATUS", "POL_STATUS"])
+    
+    agent_name = find_col(df, ["AGENT NAME", "AGENT_NAME", "SALES FORCE NAME", "EMPLOYEE NAME", "AGENT"])
+    agent_code = find_col(df, ["AGENT CODE", "AGENT_CODE", "AGENT ID", "AGENT_ID", "USER ID", "SALES FORCE CODE"])
+    agent_type = find_col(df, [
+        "AGENT TYPE", "AGENT_TYPE", "AGENCY TYPE", "SALES FORCE TYPE", "SALES_FORCE_TYPE",
+        "CADRE", "DESIGNATION", "CHANNEL", "CHANNEL TYPE", "AGENT CATEGORY", "CATEGORY"
+    ])
+
+    missing = [x for x, c in {
+        "Policy Number": policy, "Date of Entry": entry, "Paid To Date": paid,
+        "Premium": premium, "Office": office
+    }.items() if c is None]
+    if missing:
+        raise ValueError("Missing required columns in uploaded sheet(s): " + ", ".join(missing))
+
+    x = df.copy()
+    x["_POLICY"] = x[policy].astype(str).str.strip()
+    x["_ENTRY"] = pd.to_datetime(x[entry], errors="coerce", dayfirst=True)
+    x["_PAID"] = pd.to_datetime(x[paid], errors="coerce", dayfirst=True)
+    x["_BASE_PREMIUM"] = pd.to_numeric(
+        x[premium].astype(str).str.replace(",", "", regex=False).str.replace("₹", "", regex=False),
+        errors="coerce"
+    ).fillna(0)
+    x["_OFFICE"] = x[office].astype(str).str.strip()
+    x["_OFFICECODE"] = x[officecode].astype(str).str.strip() if officecode else ""
+    x["_PAYMENT"] = x[payment_col].astype(str).str.upper().str.strip() if payment_col else "MONTHLY"
+    x["_RAW_POLICY_TYPE"] = x[policy_type].astype(str).str.strip() if policy_type else "Default Scheme"
+    x["_RAW_STATUS"] = x[status_col].astype(str).str.upper().str.strip() if status_col else "ACTIVE"
+    
+    x["_AGENT_NAME"] = x[agent_name].astype(str).str.strip() if agent_name else "Direct / Unassigned"
+    x["_AGENT_CODE"] = x[agent_code].astype(str).str.strip() if agent_code else "N/A"
+    
+    if agent_type:
+        x["_RAW_AGENT_TYPE"] = x[agent_type].astype(str).str.strip()
+        x["_RAW_AGENT_TYPE"] = x["_RAW_AGENT_TYPE"].replace({"nan": "Unspecified", "None": "Unspecified", "": "Unspecified"})
+    else:
+        x["_RAW_AGENT_TYPE"] = "Unspecified"
+
+    x = x[x["_POLICY"].notna() & x["_ENTRY"].notna() & x["_PAID"].notna()].copy()
+    x = x.drop_duplicates(subset=["_POLICY", "_OFFICE", "_ENTRY", "_PAID", "_BASE_PREMIUM"])
+
+    # Total Months Elapsed
+    x["_MONTHS"] = (
+        (x["_PAID"].dt.year - x["_ENTRY"].dt.year) * 12
+        + (x["_PAID"].dt.month - x["_ENTRY"].dt.month)
+        + 1
+    ).clip(lower=1)
+
+    # Map Payment Interval
+    x["_INTERVAL"] = x["_PAYMENT"].apply(parse_payment_interval)
+
+    # Monthly equivalent rate
+    monthly_equivalent_rate = x["_BASE_PREMIUM"] / x["_INTERVAL"]
+    is_single_installment = x["_MONTHS"] <= x["_INTERVAL"]
+
+    initial_months = np.minimum(x["_MONTHS"], 12)
+    renewal_months = np.maximum(x["_MONTHS"] - 12, 0)
+
+    x["_INITIAL"] = np.where(
+        is_single_installment,
+        x["_BASE_PREMIUM"],
+        monthly_equivalent_rate * initial_months
+    )
+    x["_RENEWAL"] = np.where(
+        is_single_installment,
+        0.0,
+        monthly_equivalent_rate * renewal_months
+    )
+
+    x["_INITIAL"] = pd.to_numeric(x["_INITIAL"], errors="coerce").fillna(0.0)
+    x["_RENEWAL"] = pd.to_numeric(x["_RENEWAL"], errors="coerce").fillna(0.0)
+    x["_PREMIUM"] = x["_INITIAL"] + x["_RENEWAL"]
+
+    # Lapse Baseline
+    ref_date = pd.to_datetime(datetime.date.today())
+    if not x["_PAID"].dropna().empty:
+        max_file_dt = x["_PAID"].max()
+        if max_file_dt < ref_date:
+            ref_date = max_file_dt
+
+    x["_UNPAID_MONTHS"] = (
+        (ref_date.year - x["_PAID"].dt.year) * 12
+        + (ref_date.month - x["_PAID"].dt.month)
+    ).clip(lower=0)
+
+    x["_POLICY_AGE_MONTHS"] = (
+        (ref_date.year - x["_ENTRY"].dt.year) * 12
+        + (ref_date.month - x["_ENTRY"].dt.month)
+    ).clip(lower=0)
+
+    explicit_lapse = x["_RAW_STATUS"].str.contains("LAPSE", na=False)
+    rule_lapse = np.where(
+        x["_POLICY_AGE_MONTHS"] < 36,
+        x["_UNPAID_MONTHS"] > 6,
+        x["_UNPAID_MONTHS"] > 12
+    )
+
+    x["_IS_LAPSED"] = explicit_lapse | rule_lapse
+    x["_LAPSE_THRESHOLD"] = np.where(x["_POLICY_AGE_MONTHS"] < 36, 6, 12)
+    x["_MONTHS_SINCE_LAPSE"] = np.maximum(x["_UNPAID_MONTHS"] - x["_LAPSE_THRESHOLD"], 0)
+    
+    # Total unpaid premium calculation based on months in default
+    x["_TOTAL_UNPAID_PREMIUM"] = np.where(
+        x["_IS_LAPSED"],
+        monthly_equivalent_rate * x["_UNPAID_MONTHS"],
+        0.0
+    )
+
+    return x
+
+def aggregate_by_scheme(x):
+    if x.empty:
+        return pd.DataFrame(columns=[
+            "_OFFICECODE", "_OFFICE",
+            "PLI_Policies", "PLI_Initial", "PLI_Renewal", "PLI_Total",
+            "RPLI_Policies", "RPLI_Initial", "RPLI_Renewal", "RPLI_Total",
+            "Total_Policies", "Total_Initial", "Total_Renewal", "Total_Premium"
+        ])
+    
+    office_cols = ["_OFFICECODE", "_OFFICE"]
+    
+    piv = x.pivot_table(
+        index=office_cols,
+        columns="_SCHEME",
+        values=["_POLICY", "_INITIAL", "_RENEWAL", "_PREMIUM"],
+        aggfunc={"_POLICY": "nunique", "_INITIAL": "sum", "_RENEWAL": "sum", "_PREMIUM": "sum"},
+        fill_value=0
+    ).reset_index()
+
+    piv.columns = [f"{c[1]}_{c[0]}".strip("_") if c[1] else c[0] for c in piv.columns]
+
+    for sch in ["PLI", "RPLI"]:
+        if f"{sch}__POLICY" not in piv.columns: piv[f"{sch}__POLICY"] = 0
+        if f"{sch}__INITIAL" not in piv.columns: piv[f"{sch}__INITIAL"] = 0.0
+        if f"{sch}__RENEWAL" not in piv.columns: piv[f"{sch}__RENEWAL"] = 0.0
+        if f"{sch}__PREMIUM" not in piv.columns: piv[f"{sch}__PREMIUM"] = 0.0
+
+    piv.rename(columns={
+        "PLI__POLICY": "PLI_Policies", "PLI__INITIAL": "PLI_Initial", "PLI__RENEWAL": "PLI_Renewal", "PLI__PREMIUM": "PLI_Total",
+        "RPLI__POLICY": "RPLI_Policies", "RPLI__INITIAL": "RPLI_Initial", "RPLI__RENEWAL": "RPLI_Renewal", "RPLI__PREMIUM": "RPLI_Total"
+    }, inplace=True)
+
+    piv["Total_Policies"] = piv["PLI_Policies"] + piv["RPLI_Policies"]
+    piv["Total_Initial"] = piv["PLI_Initial"] + piv["RPLI_Initial"]
+    piv["Total_Renewal"] = piv["PLI_Renewal"] + piv["RPLI_Renewal"]
+    piv["Total_Premium"] = piv["PLI_Total"] + piv["RPLI_Total"]
+
+    return piv
+
+def excel_bytes(sheets):
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="openpyxl") as writer:
+        for name, frame in sheets.items():
+            if isinstance(frame, pd.DataFrame):
+                frame.to_excel(writer, sheet_name=name[:31], index=False)
+    bio.seek(0)
+    return bio
+
+# --- SIDEBAR: Upload Files & Persistent BOSO Handling ---
+st.sidebar.header("1. BOSO Data Management")
+current_files = st.sidebar.file_uploader("Upload latest BOSO", type=["xlsx", "xls"], accept_multiple_files=True)
+previous_files = st.sidebar.file_uploader("Previous BOSO files for comparison (Optional)", type=["xlsx", "xls"], accept_multiple_files=True)
+
+# 1. Process and save newly uploaded current files, or read from disk
+if current_files:
+    try:
+        raw_curr = read_excel_files(current_files)
+        data = prepare(raw_curr)
+        data.to_parquet(PERSISTENT_CURRENT_BOSO, index=False)
+        st.sidebar.success("✅ Latest BOSO saved successfully!")
+    except Exception as e:
+        st.error(f"Error processing uploaded BOSO file(s): {e}")
+        st.stop()
+elif os.path.exists(PERSISTENT_CURRENT_BOSO):
+    try:
+        data = pd.read_parquet(PERSISTENT_CURRENT_BOSO)
+        st.sidebar.info("💾 Loaded previously saved BOSO data from disk.")
+    except Exception as e:
+        st.error(f"Error reading saved BOSO data: {e}")
+        st.stop()
+else:
+    st.info("Upload latest BOSO file(s) in the left sidebar to begin.")
+    st.stop()
+
+# 2. Process and save newly uploaded previous files, or read from disk
+prev_data = pd.DataFrame()
+if previous_files:
+    try:
+        raw_prev = read_excel_files(previous_files)
+        prev_data = prepare(raw_prev)
+        prev_data.to_parquet(PERSISTENT_PREVIOUS_BOSO, index=False)
+        st.sidebar.success("✅ Previous BOSO comparison file saved!")
+    except Exception as e:
+        st.sidebar.error(f"Error reading previous BOSO: {e}")
+elif os.path.exists(PERSISTENT_PREVIOUS_BOSO):
+    try:
+        prev_data = pd.read_parquet(PERSISTENT_PREVIOUS_BOSO)
+    except Exception:
+        prev_data = pd.DataFrame()
+
+# 3. Sidebar action to wipe saved BOSO files
+if os.path.exists(PERSISTENT_CURRENT_BOSO):
+    if st.sidebar.button("🗑️ Clear Saved BOSO Data", use_container_width=True):
+        if os.path.exists(PERSISTENT_CURRENT_BOSO):
+            os.remove(PERSISTENT_CURRENT_BOSO)
+        if os.path.exists(PERSISTENT_PREVIOUS_BOSO):
+            os.remove(PERSISTENT_PREVIOUS_BOSO)
+        st.sidebar.warning("Saved BOSO files deleted.")
+        st.rerun()
+
+if data.empty:
+    st.error("No valid records found.")
+    st.stop()
+
+# --- LOAD ACTIVE MASTER DATA (BACKGROUND SYNCHRONIZATION) ---
+# 1. Policy Type Master
+master_policy_types = load_master_policy_type_mapping()
+current_unique_types = pd.DataFrame({"RAW_POLICY_TYPE": data["_RAW_POLICY_TYPE"].dropna().unique()})
+
+if not master_policy_types.empty:
+    merged_ptype = current_unique_types.merge(master_policy_types, on="RAW_POLICY_TYPE", how="left")
+    merged_ptype["SCHEME"] = merged_ptype["SCHEME"].fillna("PLI")
+    extra_ptypes = master_policy_types[~master_policy_types["RAW_POLICY_TYPE"].isin(merged_ptype["RAW_POLICY_TYPE"])]
+    final_ptype_df = pd.concat([merged_ptype, extra_ptypes], ignore_index=True)
+else:
+    final_ptype_df = current_unique_types.copy()
+    final_ptype_df["SCHEME"] = final_ptype_df["RAW_POLICY_TYPE"].apply(lambda s: "RPLI" if "RPLI" in str(s).upper() or "RURAL" in str(s).upper() else "PLI")
+
+active_ptype_map = final_ptype_df[["RAW_POLICY_TYPE", "SCHEME"]].drop_duplicates("RAW_POLICY_TYPE")
+data = data.merge(active_ptype_map, left_on="_RAW_POLICY_TYPE", right_on="RAW_POLICY_TYPE", how="left")
+data["_SCHEME"] = data["SCHEME"].fillna("PLI")
+data.drop(columns=["RAW_POLICY_TYPE", "SCHEME"], errors="ignore", inplace=True)
+
+# 2. Agent Master
+master_agents = load_master_agent_mapping()
+current_unique_agents = data[["_AGENT_CODE", "_AGENT_NAME", "_RAW_AGENT_TYPE"]].drop_duplicates("_AGENT_CODE").rename(
+    columns={"_AGENT_CODE": "AGENT_CODE", "_AGENT_NAME": "AGENT_NAME", "_RAW_AGENT_TYPE": "AGENT_TYPE"}
+)
+current_unique_agents = current_unique_agents[current_unique_agents["AGENT_CODE"] != "N/A"]
+
+if not master_agents.empty:
+    merged_agent_map = current_unique_agents.merge(
+        master_agents[["AGENT_CODE", "AGENT_TYPE"]],
+        on="AGENT_CODE",
+        how="left",
+        suffixes=("_RAW", "_SAVED")
+    )
+    merged_agent_map["AGENT_TYPE"] = merged_agent_map["AGENT_TYPE_SAVED"].combine_first(merged_agent_map["AGENT_TYPE_RAW"])
+    merged_agent_map = merged_agent_map[["AGENT_CODE", "AGENT_NAME", "AGENT_TYPE"]]
+    extra_agents = master_agents[~master_agents["AGENT_CODE"].isin(merged_agent_map["AGENT_CODE"])]
+    final_agent_editor_df = pd.concat([merged_agent_map, extra_agents], ignore_index=True)
+else:
+    final_agent_editor_df = current_unique_agents
+
+active_agent_map = final_agent_editor_df[["AGENT_CODE", "AGENT_TYPE"]].drop_duplicates("AGENT_CODE")
+data = data.merge(active_agent_map, left_on="_AGENT_CODE", right_on="AGENT_CODE", how="left")
+data["_AGENT_TYPE"] = data["AGENT_TYPE"].combine_first(data["_RAW_AGENT_TYPE"]).fillna("Unspecified")
+data.drop(columns=["AGENT_CODE", "AGENT_TYPE"], errors="ignore", inplace=True)
+
+# 3. Office Master
+master_offices = load_master_office_mapping()
+current_unique_offices = data[["_OFFICECODE", "_OFFICE"]].drop_duplicates().rename(
+    columns={"_OFFICECODE": "OFFICECODE", "_OFFICE": "OFFICENAME"}
+).sort_values(["OFFICENAME"])
+
+base_map = current_unique_offices.copy()
+if not master_offices.empty:
+    j_key = "OFFICECODE" if "OFFICECODE" in master_offices.columns and "OFFICECODE" in base_map.columns and base_map["OFFICECODE"].iloc[0] != "" else "OFFICENAME"
+    cols = [c for c in master_offices.columns if c in [j_key, "SUB DIVISION", "PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET", "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"]]
+    base_map = base_map.merge(master_offices[cols].drop_duplicates(j_key), on=j_key, how="left")
+
+if "SUB DIVISION" not in base_map.columns: 
+    base_map["SUB DIVISION"] = "Main Division"
+for t_col in ["PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET", "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"]:
+    if t_col not in base_map.columns: 
+        base_map[t_col] = 0.0
+    base_map[t_col] = pd.to_numeric(base_map[t_col], errors="coerce").fillna(0.0)
+
+base_map["SUB DIVISION"] = base_map["SUB DIVISION"].fillna("Main Division")
+
+data = data.merge(
+    base_map[["OFFICECODE", "OFFICENAME", "SUB DIVISION"]],
+    left_on=["_OFFICECODE", "_OFFICE"],
+    right_on=["OFFICECODE", "OFFICENAME"],
+    how="left"
+)
+data["SUB DIVISION"] = data["SUB DIVISION"].replace("", "Unmapped").fillna("Unmapped")
+
+# --- DATE FILTERS ---
+st.sidebar.header("2. Date Range Filter")
+min_entry_dt = data["_ENTRY"].min()
+max_entry_dt = data["_ENTRY"].max()
+min_entry_date = min_entry_dt.date()
+max_entry_date = max_entry_dt.date()
+
+def get_fy_label(dt):
+    year = dt.year
+    return f"FY {year-1}-{str(year)[-2:]}" if dt.month < 4 else f"FY {year}-{str(year+1)[-2:]}"
+
+all_years = sorted(list(set(data["_ENTRY"].dt.year.dropna().astype(int))))
+fy_options, fy_dict = [], {}
+
+for y in range(min(all_years) - 1, max(all_years) + 2):
+    fy_label = f"FY {y}-{str(y+1)[-2:]}"
+    start_d, end_d = datetime.date(y, 4, 1), datetime.date(y + 1, 3, 31)
+    if not (end_d < min_entry_date or start_d > max_entry_date):
+        fy_options.append(fy_label)
+        fy_dict[fy_label] = (start_d, end_d)
+
+filter_mode = st.sidebar.radio("Select Date Filter Mode:", ["All Available Data", "Financial Year (FY)", "Custom Date Range"])
+start_label = str(min_entry_date)
+
+if filter_mode == "All Available Data":
+    st.sidebar.info(f"📅 **Full Period:** {min_entry_date.strftime('%d-%b-%Y')} to {max_entry_date.strftime('%d-%b-%Y')}")
+    start_label = "All_Data"
+elif filter_mode == "Financial Year (FY)":
+    current_fy_guess = get_fy_label(max_entry_date)
+    default_fy_idx = fy_options.index(current_fy_guess) if current_fy_guess in fy_options else 0
+    selected_fy = st.sidebar.selectbox("Select Financial Year:", fy_options, index=default_fy_idx)
+    fy_start, fy_end = fy_dict[selected_fy]
+    start_dt, end_dt = pd.to_datetime(fy_start), pd.to_datetime(fy_end)
+    start_label = selected_fy.replace(" ", "_")
+    data = data[(data["_ENTRY"] >= start_dt) & (data["_ENTRY"] <= end_dt)]
+elif filter_mode == "Custom Date Range":
+    date_selection = st.sidebar.date_input("Date Range", value=(min_entry_date, max_entry_date), min_value=min_entry_date, max_value=max_entry_date)
+    if isinstance(date_selection, (tuple, list)) and len(date_selection) == 2:
+        start_dt, end_dt = pd.to_datetime(date_selection[0]), pd.to_datetime(date_selection[1])
+        start_label = f"{date_selection[0]}_to_{date_selection[1]}"
+        data = data[(data["_ENTRY"] >= start_dt) & (data["_ENTRY"] <= end_dt)]
+
+# Compute Aggregates
+office = aggregate_by_scheme(data)
+office = office.merge(
+    base_map[[
+        "OFFICECODE", "OFFICENAME", "SUB DIVISION",
+        "PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET",
+        "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"
+    ]],
+    left_on=["_OFFICECODE", "_OFFICE"],
+    right_on=["OFFICECODE", "OFFICENAME"],
+    how="left"
+)
+office["SUB DIVISION"] = office["SUB DIVISION"].replace("", "Unmapped").fillna("Unmapped")
+for t_col in ["PLI_INITIAL_TARGET", "PLI_RENEWAL_TARGET", "RPLI_INITIAL_TARGET", "RPLI_RENEWAL_TARGET"]:
+    office[t_col] = pd.to_numeric(office[t_col], errors="coerce").fillna(0.0)
+
+office["PLI_Total_Target"] = office["PLI_INITIAL_TARGET"] + office["PLI_RENEWAL_TARGET"]
+office["RPLI_Total_Target"] = office["RPLI_INITIAL_TARGET"] + office["RPLI_RENEWAL_TARGET"]
+office["Combined_Total_Target"] = office["PLI_Total_Target"] + office["RPLI_Total_Target"]
+
+office["PLI_Initial_Ach_%"] = np.where(office["PLI_INITIAL_TARGET"] > 0, (office["PLI_Initial"] / office["PLI_INITIAL_TARGET"]) * 100, 0.0)
+office["PLI_Renewal_Ach_%"] = np.where(office["PLI_RENEWAL_TARGET"] > 0, (office["PLI_Renewal"] / office["PLI_RENEWAL_TARGET"]) * 100, 0.0)
+office["RPLI_Initial_Ach_%"] = np.where(office["RPLI_INITIAL_TARGET"] > 0, (office["RPLI_Initial"] / office["RPLI_INITIAL_TARGET"]) * 100, 0.0)
+office["RPLI_Renewal_Ach_%"] = np.where(office["RPLI_RENEWAL_TARGET"] > 0, (office["RPLI_Renewal"] / office["RPLI_RENEWAL_TARGET"]) * 100, 0.0)
+office["Overall_Ach_%"] = np.where(office["Combined_Total_Target"] > 0, (office["Total_Premium"] / office["Combined_Total_Target"]) * 100, 0.0)
+
+# Precalculate Sub Division dataframe
+sub = (office.groupby("SUB DIVISION", dropna=False)
+    .agg(
+        Offices=("OFFICENAME", "count"),
+        PLI_Policies=("PLI_Policies", "sum"),
+        PLI_Initial=("PLI_Initial", "sum"),
+        PLI_Renewal=("PLI_Renewal", "sum"),
+        RPLI_Policies=("RPLI_Policies", "sum"),
+        RPLI_Initial=("RPLI_Initial", "sum"),
+        RPLI_Renewal=("RPLI_Renewal", "sum"),
+        Total_Premium=("Total_Premium", "sum"),
+        Combined_Target=("Combined_Total_Target", "sum")
+    ).reset_index())
+sub["Achievement_%"] = np.where(sub["Combined_Target"] > 0, (sub["Total_Premium"] / sub["Combined_Target"]) * 100, 0.0)
+
+# Precalculate Lapsed dataframe
+lapsed_df = data[data["_IS_LAPSED"]].copy()
+
+# Precalculate Agent Summary
+agent_summary = (
+    data.groupby(["_AGENT_TYPE", "_AGENT_CODE", "_AGENT_NAME"], dropna=False)
+    .agg(
+        Offices=("_OFFICE", lambda s: ", ".join(sorted(pd.Series(s).dropna().unique()))),
+        Policies=("_POLICY", "nunique"),
+        Initial_Premium=("_INITIAL", "sum"),
+        Renewal_Premium=("_RENEWAL", "sum"),
+        Total_Premium=("_PREMIUM", "sum")
+    )
+    .reset_index()
+    .sort_values("Initial_Premium", ascending=False)
+)
+agent_summary["Rank"] = range(1, len(agent_summary) + 1)
+
+# ==============================================================================
+# SCREEN 1: HOME PAGE / LARGE NAVIGATION DASHBOARD
+# ==============================================================================
+if st.session_state.current_view == "HOME":
+    st.title("📊 PLI & RPLI Performance Analyzer")
+    st.caption("Divisional Analytics, Performance Portals, Agent Rankings, and Settings.")
+
+    # --- TOP KPI SUMMARY OVERVIEW ---
+    st.markdown("### 📌 Overall Performance Overview")
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Total Policies", f"{data['_POLICY'].nunique():,}")
+    kpi1.caption(f"PLI: {data[data['_SCHEME']=='PLI']['_POLICY'].nunique():,} | RPLI: {data[data['_SCHEME']=='RPLI']['_POLICY'].nunique():,}")
+
+    kpi2.metric("PLI Initial Premium", f"₹{office['PLI_Initial'].sum():,.2f}")
+    kpi2.caption(f"Target: ₹{office['PLI_INITIAL_TARGET'].sum():,.0f}")
+
+    kpi3.metric("PLI Renewal Premium", f"₹{office['PLI_Renewal'].sum():,.2f}")
+    kpi3.caption(f"Target: ₹{office['PLI_RENEWAL_TARGET'].sum():,.0f}")
+
+    kpi4.metric("RPLI Initial Premium", f"₹{office['RPLI_Initial'].sum():,.2f}")
+    kpi4.caption(f"Target: ₹{office['RPLI_INITIAL_TARGET'].sum():,.0f}")
+
+    kpi5.metric("RPLI Renewal Premium", f"₹{office['RPLI_Renewal'].sum():,.2f}")
+    kpi5.caption(f"Target: ₹{office['RPLI_RENEWAL_TARGET'].sum():,.0f}")
+
+    st.markdown("---")
+    st.markdown("### 🗂️ Select Analytics & Management Module")
+
+    # Large Menu Cards: Row 1 (Analytics Modules)
+    r1_c1, r1_c2, r1_c3, r1_c4 = st.columns(4)
+    with r1_c1:
+        if st.button("🎯 Office Target & Ach.", use_container_width=True):
+            st.session_state.current_view = "TARGET"
+            st.rerun()
+        st.caption("Target vs. achievement review by office.")
+
+    with r1_c2:
+        if st.button("🏢 Sub Division Performance", use_container_width=True):
+            st.session_state.current_view = "SUBDIV"
+            st.rerun()
+        st.caption("Consolidated subdivision analytics.")
+
+    with r1_c3:
+        if st.button("🏅 Agent Leaderboards", use_container_width=True):
+            st.session_state.current_view = "AGENT"
+            st.rerun()
+        st.caption("Top rankings and multi-cadre filters.")
+
+    with r1_c4:
+        if st.button("⚠️ Lapsed Tracker", use_container_width=True):
+            st.session_state.current_view = "LAPSED"
+            st.rerun()
+        st.caption("Lapsed policies with custom horizon.")
+
+    st.write("")
+
+    # Large Menu Cards: Row 2 (Records, Comparison, and Settings)
+    r2_c1, r2_c2, r2_c3 = st.columns(3)
+    with r2_c1:
+        if st.button("🔎 Detailed Policy Records", use_container_width=True):
+            st.session_state.current_view = "RECORDS"
+            st.rerun()
+        st.caption("Line-by-line raw policy records.")
+
+    with r2_c2:
+        if st.button("📈 Period Comparison", use_container_width=True):
+            st.session_state.current_view = "COMPARE"
+            st.rerun()
+        st.caption("Compare with previous BOSO reports.")
+
+    with r2_c3:
+        if st.button("⚙️ Settings & Master Mappings", use_container_width=True, type="secondary"):
+            st.session_state.current_view = "SETTINGS"
+            st.rerun()
+        st.caption("Manage plans, offices, targets, and agents.")
+
+# ==============================================================================
+# SUB-PAGES (NAVIGATED SCREENS)
+# ==============================================================================
+else:
+    top_nav1, _ = st.columns([1.5, 5])
+    with top_nav1:
+        if st.button("⬅️ BACK TO MAIN MENU", type="secondary", use_container_width=True):
+            st.session_state.current_view = "HOME"
+            st.rerun()
+
+    st.markdown("---")
+
+    # 1. OFFICE TARGETS SCREEN
+    if st.session_state.current_view == "TARGET":
+        st.subheader("🎯 Scheme & Office Target Analysis")
+        scheme_view = st.radio("Select Target View:", ["All Combined", "PLI Targets & Achievement", "RPLI Targets & Achievement"], horizontal=True)
+        if scheme_view == "PLI Targets & Achievement":
+            cols_pli = [
+                "OFFICENAME", "SUB DIVISION", "PLI_Policies",
+                "PLI_Initial", "PLI_INITIAL_TARGET", "PLI_Initial_Ach_%",
+                "PLI_Renewal", "PLI_RENEWAL_TARGET", "PLI_Renewal_Ach_%",
+                "PLI_Total", "PLI_Total_Target"
+            ]
+            st.dataframe(office[cols_pli].sort_values("PLI_Initial", ascending=False), use_container_width=True, hide_index=True)
+        elif scheme_view == "RPLI Targets & Achievement":
+            cols_rpli = [
+                "OFFICENAME", "SUB DIVISION", "RPLI_Policies",
+                "RPLI_Initial", "RPLI_INITIAL_TARGET", "RPLI_Initial_Ach_%",
+                "RPLI_Renewal", "RPLI_RENEWAL_TARGET", "RPLI_Renewal_Ach_%",
+                "RPLI_Total", "RPLI_Total_Target"
+            ]
+            st.dataframe(office[cols_rpli].sort_values("RPLI_Initial", ascending=False), use_container_width=True, hide_index=True)
+        else:
+            st.dataframe(office[[
+                "OFFICENAME", "SUB DIVISION", "Total_Policies", "Total_Initial", "Total_Renewal",
+                "Total_Premium", "Combined_Total_Target", "Overall_Ach_%"
+            ]].sort_values("Overall_Ach_%", ascending=False), use_container_width=True, hide_index=True)
+
+    # 2. SUB DIVISION SCREEN
+    elif st.session_state.current_view == "SUBDIV":
+        st.subheader("🏢 Sub Division Performance by Scheme")
+        st.dataframe(sub.sort_values("Total_Premium", ascending=False), use_container_width=True, hide_index=True)
+
+    # 3. AGENT LEADERBOARDS SCREEN
+    elif st.session_state.current_view == "AGENT":
+        st.subheader("🏅 Agent Leaderboards")
+        c_sch, c_num = st.columns([1, 1])
+        with c_sch:
+            ag_scheme_filter = st.selectbox("Scheme Filter:", ["All Schemes", "PLI Only", "RPLI Only"])
+        with c_num:
+            display_limit = st.selectbox(
+                "Display Rows:",
+                ["Top 10", "Top 25", "Top 50", "Top 100", "Top 250", "Top 500", "All Agents"],
+                index=2
+            )
+
+        all_agent_cadres = sorted([str(t) for t in data["_AGENT_TYPE"].dropna().unique()])
+        with st.expander("🏷️ Select Agent Cadre / Categories (Multi-select Checkboxes)", expanded=True):
+            chk_c1, _ = st.columns([1, 4])
+            with chk_c1:
+                select_all_cadres = st.checkbox("Select All Cadres", value=True)
+            
+            selected_cadres = []
+            if select_all_cadres:
+                selected_cadres = all_agent_cadres
+                st.caption(f"✓ All {len(all_agent_cadres)} categories included.")
+            else:
+                num_cols = min(len(all_agent_cadres), 4) if len(all_agent_cadres) > 0 else 1
+                cols = st.columns(num_cols)
+                for idx, cadre in enumerate(all_agent_cadres):
+                    with cols[idx % num_cols]:
+                        if st.checkbox(cadre, value=False, key=f"cadre_chk_{cadre}"):
+                            selected_cadres.append(cadre)
+
+        f_data = data.copy()
+        if ag_scheme_filter == "PLI Only":
+            f_data = f_data[f_data["_SCHEME"] == "PLI"]
+        elif ag_scheme_filter == "RPLI Only":
+            f_data = f_data[f_data["_SCHEME"] == "RPLI"]
+        
+        if selected_cadres:
+            f_data = f_data[f_data["_AGENT_TYPE"].isin(selected_cadres)]
+        else:
+            f_data = f_data.iloc[0:0]
+
+        agent_summary_filtered = (
+            f_data.groupby(["_AGENT_TYPE", "_AGENT_CODE", "_AGENT_NAME"], dropna=False)
+            .agg(
+                Offices=("_OFFICE", lambda s: ", ".join(sorted(pd.Series(s).dropna().unique()))),
+                Policies=("_POLICY", "nunique"),
+                Initial_Premium=("_INITIAL", "sum"),
+                Renewal_Premium=("_RENEWAL", "sum"),
+                Total_Premium=("_PREMIUM", "sum")
+            )
+            .reset_index()
+            .sort_values("Initial_Premium", ascending=False)
+        )
+        agent_summary_filtered["Rank"] = range(1, len(agent_summary_filtered) + 1)
+        
+        if display_limit == "All Agents":
+            view_agent_df = agent_summary_filtered
+        else:
+            limit_num = int(display_limit.replace("Top ", ""))
+            view_agent_df = agent_summary_filtered.head(limit_num)
+            
+        st.dataframe(view_agent_df, use_container_width=True, hide_index=True)
+
+    # 4. LAPSED POLICIES TRACKER SCREEN
+    elif st.session_state.current_view == "LAPSED":
+        st.subheader("⚠️ Lapsed Policies Tracker")
+        st.caption("Configurable lapse lookback window based on Paid To Date and Department of Posts lapsing guidelines.")
+
+        cur_lapsed = lapsed_df.copy()
+        col_l1, col_l2, col_l3, col_l4 = st.columns([1, 1.2, 1, 1])
+        with col_l1:
+            scheme_lapse_filter = st.selectbox("Scheme Filter:", ["All Schemes", "PLI", "RPLI"], key="lapse_scheme_flt")
+        with col_l2:
+            lapse_duration_choice = st.selectbox(
+                "Lapse Horizon Filter:",
+                ["All Lapsed Policies", "Lapsed Within Custom Years", "Lapsed Beyond Custom Years"],
+                index=1,
+                key="lapse_dur_choice"
+            )
+        with col_l3:
+            if lapse_duration_choice != "All Lapsed Policies":
+                selected_years = st.number_input("Select No. of Years (Lapse Horizon):", min_value=1, max_value=10, value=1, step=1, key="lapse_years_input")
+            else:
+                selected_years = 1
+                st.selectbox("Select No. of Years:", ["All Recorded Periods"], disabled=True)
+        with col_l4:
+            all_lapsed_offices = sorted(list(cur_lapsed["_OFFICE"].dropna().unique()))
+            selected_lapsed_office = st.selectbox("Office Filter (Optional):", ["All Offices"] + all_lapsed_offices, key="lapse_off_flt")
+
+        cur_lapsed["_LAPSED_IN_CUSTOM_YEARS"] = cur_lapsed["_MONTHS_SINCE_LAPSE"] <= (selected_years * 12)
+
+        if scheme_lapse_filter != "All Schemes":
+            cur_lapsed = cur_lapsed[cur_lapsed["_SCHEME"] == scheme_lapse_filter]
+
+        if lapse_duration_choice == "Lapsed Within Custom Years":
+            cur_lapsed = cur_lapsed[cur_lapsed["_LAPSED_IN_CUSTOM_YEARS"]]
+        elif lapse_duration_choice == "Lapsed Beyond Custom Years":
+            cur_lapsed = cur_lapsed[~cur_lapsed["_LAPSED_IN_CUSTOM_YEARS"]]
+
+        if selected_lapsed_office != "All Offices":
+            cur_lapsed = cur_lapsed[cur_lapsed["_OFFICE"] == selected_lapsed_office]
+
+        lm1, lm2, lm3, lm4, lm5 = st.columns(5)
+        lm1.metric("Total Lapsed Policies", f"{cur_lapsed['_POLICY'].nunique():,}")
+        lm2.metric(f"Lapsed Within {selected_years} Year(s)", f"{cur_lapsed[cur_lapsed['_LAPSED_IN_CUSTOM_YEARS']]['_POLICY'].nunique():,}")
+        lm3.metric("Total Unpaid Premium", f"₹{cur_lapsed['_TOTAL_UNPAID_PREMIUM'].sum():,.2f}")
+        lm4.metric("Initial Premium at Risk", f"₹{cur_lapsed['_INITIAL'].sum():,.2f}")
+        lm5.metric("Renewal Premium at Risk", f"₹{cur_lapsed['_RENEWAL'].sum():,.2f}")
+
+        lapsed_display_cols = [
+            "_POLICY", "_SCHEME", "_RAW_POLICY_TYPE", "_OFFICE",
+            "SUB DIVISION", "_AGENT_NAME", "_ENTRY", "_PAID",
+            "_UNPAID_MONTHS", "_MONTHS_SINCE_LAPSE", "_LAPSED_IN_CUSTOM_YEARS",
+            "_PAYMENT", "_BASE_PREMIUM", "_TOTAL_UNPAID_PREMIUM", "_PREMIUM"
+        ]
+        
+        view_lapsed = cur_lapsed[lapsed_display_cols].rename(columns={
+            "_POLICY": "Policy Number",
+            "_SCHEME": "Scheme",
+            "_RAW_POLICY_TYPE": "Plan Type",
+            "_OFFICE": "Office Name",
+            "SUB DIVISION": "Sub Division",
+            "_AGENT_NAME": "Agent Name",
+            "_ENTRY": "Date of Entry",
+            "_PAID": "Paid To Date",
+            "_UNPAID_MONTHS": "Total Months Unpaid",
+            "_MONTHS_SINCE_LAPSE": "Months Since Lapsed",
+            "_LAPSED_IN_CUSTOM_YEARS": f"Lapsed Within {selected_years} Yr(s)?",
+            "_PAYMENT": "Payment Mode",
+            "_BASE_PREMIUM": "Installment Premium (₹)",
+            "_TOTAL_UNPAID_PREMIUM": "Total Unpaid Premium (₹)",
+            "_PREMIUM": "Total Premium Paid (₹)"
+        }).sort_values("Paid To Date", ascending=False)
+
+        st.dataframe(view_lapsed, use_container_width=True, hide_index=True)
+
+    # 5. DETAILED RECORDS SCREEN
+    elif st.session_state.current_view == "RECORDS":
+        st.subheader("Detailed Policy Records")
+        cols_display = [
+            "_POLICY", "_SCHEME", "_RAW_POLICY_TYPE", "_OFFICECODE", "_OFFICE",
+            "SUB DIVISION", "_AGENT_TYPE", "_AGENT_NAME", "_ENTRY", "_PAID",
+            "_MONTHS", "_PAYMENT", "_INTERVAL", "_BASE_PREMIUM", "_PREMIUM", "_INITIAL", "_RENEWAL"
+        ]
+        st.dataframe(
+            data[cols_display].rename(columns={
+                "_POLICY": "Policy Number", "_SCHEME": "Scheme", "_RAW_POLICY_TYPE": "Plan / Policy Type",
+                "_OFFICECODE": "Office Code", "_OFFICE": "Office", "SUB DIVISION": "Sub Division",
+                "_AGENT_TYPE": "Agent Type", "_AGENT_NAME": "Agent Name", "_ENTRY": "Date of Entry",
+                "_PAID": "Paid To Date", "_MONTHS": "Months Elapsed", "_PAYMENT": "Payment Type (Excel)",
+                "_INTERVAL": "Detected Interval (Months)", "_BASE_PREMIUM": "Installment Premium (Excel)",
+                "_PREMIUM": "Total Calculated Premium", "_INITIAL": "Initial Premium", "_RENEWAL": "Renewal Premium"
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+
+    # 6. PERIOD COMPARISON SCREEN
+    elif st.session_state.current_view == "COMPARE":
+        st.subheader("📈 Period Comparison")
+        if not prev_data.empty:
+            try:
+                prev_proc = prev_data.merge(active_ptype_map, left_on="_RAW_POLICY_TYPE", right_on="RAW_POLICY_TYPE", how="left")
+                prev_proc["_SCHEME"] = prev_proc["SCHEME"].fillna("PLI")
+                prev_office = aggregate_by_scheme(prev_proc)
+                comp = office.merge(prev_office[["_OFFICECODE", "Total_Premium", "Total_Policies"]], on="_OFFICECODE", suffixes=("", "_Previous"), how="outer").fillna(0)
+                comp["Premium_Growth"] = comp["Total_Premium"] - comp["Total_Premium_Previous"]
+                st.dataframe(comp[["OFFICENAME", "SUB DIVISION", "Total_Premium", "Total_Premium_Previous", "Premium_Growth"]].sort_values("Premium_Growth", ascending=False), use_container_width=True, hide_index=True)
+            except Exception as e:
+                st.error(f"Comparison error: {e}")
+        else:
+            st.info("Upload previous BOSO files in the sidebar to view performance comparison.")
+
+    # 7. SETTINGS & MASTER MAPPINGS SCREEN
+    elif st.session_state.current_view == "SETTINGS":
+        st.subheader("⚙️ Settings & Master Mappings")
+        st.info("Configure permanent master data and target figures below. Click Save in each tab to persist data locally.")
+
+        set_tab1, set_tab2, set_tab3 = st.tabs([
+            "📋 Policy Type ↔ Scheme (PLI / RPLI)",
+            "🗺️ Offices, Sub Divisions & Separate Targets",
+            "👤 Agent Master Mapping"
+        ])
+
+        # Sub-Tab 1: Policy Type Mapping
+        with set_tab1:
+            st.write("Map raw policy types / products to **PLI** or **RPLI**:")
+            edited_ptype_df = st.data_editor(
+                final_ptype_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["RAW_POLICY_TYPE"],
+                column_config={
+                    "RAW_POLICY_TYPE": st.column_config.TextColumn("Detected Policy Type / Plan"),
+                    "SCHEME": st.column_config.SelectboxColumn("Scheme Category", options=["PLI", "RPLI"], required=True)
+                },
+                key="ptype_master_editor_nav"
+            )
+
+            pt_b1, pt_b2 = st.columns([1, 1])
+            with pt_b1:
+                if st.button("💾 Save Policy Type Mapping", type="primary", use_container_width=True):
+                    clean_save_ptype = edited_ptype_df.dropna(subset=["RAW_POLICY_TYPE"]).drop_duplicates("RAW_POLICY_TYPE")
+                    save_master_policy_type_mapping(clean_save_ptype)
+                    st.success("✅ Policy type master mapping saved!")
+            with pt_b2:
+                st.download_button(
+                    "⬇️ Export Policy Type Master",
+                    excel_bytes({"Policy Type Master": edited_ptype_df}),
+                    file_name="Policy_Type_Master_Mapping.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+        # Sub-Tab 2: Office & Targets Mapping
+        with set_tab2:
+            st.write("Assign Sub Divisions & Specific Initial / Renewal Targets for PLI and RPLI:")
+            edited_office_map = st.data_editor(
+                base_map,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["OFFICECODE", "OFFICENAME"],
+                column_config={
+                    "OFFICECODE": st.column_config.TextColumn("Office Code"),
+                    "OFFICENAME": st.column_config.TextColumn("Office Name"),
+                    "SUB DIVISION": st.column_config.TextColumn("Sub Division"),
+                    "PLI_INITIAL_TARGET": st.column_config.NumberColumn("PLI Initial Target (₹)", min_value=0, format="₹%d"),
+                    "PLI_RENEWAL_TARGET": st.column_config.NumberColumn("PLI Renewal Target (₹)", min_value=0, format="₹%d"),
+                    "RPLI_INITIAL_TARGET": st.column_config.NumberColumn("RPLI Initial Target (₹)", min_value=0, format="₹%d"),
+                    "RPLI_RENEWAL_TARGET": st.column_config.NumberColumn("RPLI Renewal Target (₹)", min_value=0, format="₹%d"),
+                },
+                key="office_master_editor_nav"
+            )
+
+            of_b1, of_b2 = st.columns([1, 1])
+            with of_b1:
+                if st.button("💾 Save Office & Targets Mapping", type="primary", use_container_width=True):
+                    save_master_office_mapping(edited_office_map)
+                    st.success("✅ Permanent Office Targets & Mappings saved!")
+            with of_b2:
+                st.download_button(
+                    "⬇️ Export Office Targets Master",
+                    excel_bytes({"Office Master": edited_office_map}),
+                    file_name="Office_Master_Mapping.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+        # Sub-Tab 3: Agent Master Mapping
+        with set_tab3:
+            st.write("Edit Agent Types permanently:")
+            edited_agent_df = st.data_editor(
+                final_agent_editor_df,
+                use_container_width=True,
+                hide_index=True,
+                disabled=["AGENT_CODE", "AGENT_NAME"],
+                column_config={
+                    "AGENT_CODE": st.column_config.TextColumn("Agent ID / Code"),
+                    "AGENT_NAME": st.column_config.TextColumn("Agent Name"),
+                    "AGENT_TYPE": st.column_config.TextColumn("Agent Cadre / Designation")
+                },
+                key="agent_master_editor_nav"
+            )
+
+            ag_b1, ag_b2 = st.columns([1, 1])
+            with ag_b1:
+                if st.button("💾 Save Agent Mapping", type="primary", use_container_width=True):
+                    clean_save_agent = edited_agent_df.dropna(subset=["AGENT_CODE"]).drop_duplicates("AGENT_CODE")
+                    save_master_agent_mapping(clean_save_agent)
+                    st.success("✅ Permanent Agent mapping saved!")
+            with ag_b2:
+                st.download_button(
+                    "⬇️ Export Agent Master",
+                    excel_bytes({"Agent Master": edited_agent_df}),
+                    file_name="Agent_Master_Mapping.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+
+# --- FOOTER & EXPORT ---
+sheets = {
+    "Office Performance": office,
+    "Sub Division Performance": sub,
+    "Agent Performance": agent_summary,
+    "Lapsed Policies": lapsed_df,
+    "Policy Raw Details": data,
+    "Office Target Master": base_map,
+    "Policy Type Master": final_ptype_df,
+    "Agent Master": final_agent_editor_df
+}
+
+st.sidebar.markdown("---")
+st.sidebar.download_button(
+    "📥 Download Complete Excel Report",
+    excel_bytes(sheets),
+    file_name=f"PLI_RPLI_Performance_Report_{start_label}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
+
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: #777777; font-size: 0.85rem;'>
+        PLI & RPLI Performance Analyzer | Developed by <strong>BALU HAREENDRA</strong>, OA PLI Mavelikara Division
+    </div>
+    """,
+    unsafe_allow_html=True
+)
